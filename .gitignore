@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Lab secrets and large evidence
+*.key
+*.pem
+*.p12
+*.pfx
+*.pcapng
+core
+core.*
+
+# Local lab output
+logs/
+results/
+*.log
+*.tar
+*.tar.gz
+.DS_Store
