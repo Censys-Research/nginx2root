@@ -2,7 +2,17 @@ name: test
 
 on:
   push:
+    paths:
+      - '**.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/test.yml'
   pull_request:
+    paths:
+      - '**.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/test.yml'
 
 jobs:
   unit-tests:
@@ -12,6 +22,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.9.17"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
       - run: uv sync --frozen
       - run: uv run python -m py_compile h2c_flow_control_test.py compatibility_runner.py
       - run: uv run pytest
@@ -24,9 +36,24 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.9.17"
-      - run: docker pull --platform linux/amd64 nginx:1.31.8
-      - run: docker pull --platform linux/amd64 nginx:1.31.9
-      - run: docker pull --platform linux/amd64 python:3.10-slim
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Restore Docker images
+        uses: actions/cache@v4
+        with:
+          path: /tmp/nginx2root-docker-images.tar
+          key: nginx2root-docker-v1-nginx-1.31.8-1.31.9-python-3.10-slim
+      - name: Pull images on cache miss
+        if: steps.cache-images.outputs.cache-hit != 'true'
+        id: cache-images
+        run: |
+          docker pull --platform linux/amd64 nginx:1.31.8
+          docker pull --platform linux/amd64 nginx:1.31.9
+          docker pull --platform linux/amd64 python:3.10-slim
+          docker save nginx:1.31.8 nginx:1.31.9 python:3.10-slim -o /tmp/nginx2root-docker-images.tar
+      - name: Load cached images
+        if: steps.cache-images.outputs.cache-hit == 'true'
+        run: docker load -i /tmp/nginx2root-docker-images.tar
       - run: |
           uv run python -I h2c_flow_control_test.py \
             --docker \
