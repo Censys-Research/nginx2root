@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-11-19",
+  "vm": "nginx2root-avx512",
+  "client_sha256": "9417718625a82d47315e18149880c3392de1270b73ee04259b71b2ffbe9fbb9c",
+  "client_image": "rapid7-nginx2root-rce-client:3.10",
+  "client_image_id": "23b9297e8bc4",
+  "targets": [
+    {
+      "transport": "h2c",
+      "version": "1.31.8",
+      "image": "nginx:1.31.8-rapid7-offline",
+      "image_id": "793a5e7fb63b",
+      "path": "direct-loopback",
+      "exit": 0,
+      "probe_sent": true,
+      "ping_ack": true,
+      "verdict": "vulnerable_accounting_error_observed",
+      "evidence_prefix": "compact-vm-h2c-vulnerable-final-direct-"
+    },
+    {
+      "transport": "h2c",
+      "version": "1.31.9",
+      "image": "nginx:1.31.9",
+      "image_id": "81b01f35f484",
+      "path": "direct-loopback",
+      "exit": 1,
+      "probe_sent": false,
+      "closed_at": "wu4M",
+      "server_error": "client violated connection flow control: received WINDOW_UPDATE frame with window increment 4194304 not allowed for window 2144354350",
+      "verdict": "patched_rejected_before_probe",
+      "evidence_prefix": "compact-vm-h2c-patched-final-direct-"
+    },
+    {
+      "transport": "tls",
+      "version": "1.31.8",
+      "image": "nginx:1.31.8-rapid7-offline",
+      "image_id": "793a5e7fb63b",
+      "path": "direct-loopback",
+      "exit": 1,
+      "probe_sent": false,
+      "closed_at": "wu4M",
+      "server_error": "client violated connection flow control: received WINDOW_UPDATE frame with window increment 4194304 not allowed for window 2144272383",
+      "verdict": "inconclusive_not_a_positive",
+      "evidence_prefix": "compact-vm-tls-vulnerable-final-direct-"
+    },
+    {
+      "transport": "tls",
+      "version": "1.31.9",
+      "image": "nginx:1.31.9",
+      "image_id": "81b01f35f484",
+      "path": "direct-loopback",
+      "exit": 1,
+      "probe_sent": false,
+      "closed_at": "wu4M",
+      "server_error": "client violated connection flow control: received WINDOW_UPDATE frame with window increment 4194304 not allowed for window 2144313391",
+      "verdict": "inconclusive_no_differential",
+      "evidence_prefix": "compact-vm-tls-patched-final-direct-"
+    },
+    {
+      "transport": "tls",
+      "version": "1.31.8",
+      "path": "docker-published-loopback-with-host-network-client",
+      "exit": 0,
+      "probe_sent": true,
+      "ping_ack": true,
+      "verdict": "vulnerable_positive_but_control_failed",
+      "evidence_prefix": "compact-vm-tls-vulnerable-current-host-"
+    },
+    {
+      "transport": "tls",
+      "version": "1.31.9",
+      "path": "docker-published-loopback-with-host-network-client",
+      "exit": 0,
+      "probe_sent": true,
+      "ping_ack": true,
+      "verdict": "patched_control_false_positive",
+      "evidence_prefix": "compact-vm-tls-patched-current-host-"
+    }
+  ],
+  "h2c_differential_validated": true,
+  "tls_differential_validated": false,
+  "offline_tests": {
+    "command": "uv run pytest investigations/nginx2root-2026-11-18/public-repo/tests/test_compact_flow.py -q",
+    "result": "28 passed in 0.13s"
+  }
+}
