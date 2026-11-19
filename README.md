@@ -32,6 +32,8 @@ Evidence is in [`evidence/cve-2026-123007/`](evidence/cve-2026-123007/). The [at
 
 ## Compact accounting captures
 
+Run the single-file Censys compact accounting PoC with the [Docker instructions](docs/COMPACT-POC.md). It demonstrates the accounting error on nginx 1.31.8 and the patched 1.31.9 control over cleartext h2c. It is not an RCE exploit. TLS support remains under validation and is not claimed.
+
 The two 5.69 MB h2c captures compare nginx 1.31.8 with patched 1.31.9:
 
 - `oracle-v2-positive.pcap`: after queued-DATA cleanup, the vulnerable server accepts `WINDOW_UPDATE(0,1)` while over-credited and answers PING.
@@ -58,6 +60,8 @@ The runner supports explicit, consent-gated live adapters as they are added. Exe
 ```sh
 uv run pytest
 ```
+
+For the profile/heap compatibility matrix on the isolated native AVX512 VM, see [compatibility runner instructions](docs/CVE-2026-123007-COMPATIBILITY.md). It defaults to list/dry-run, includes independent 1.31.9 controls, and has a transport-only mode that never invokes the exploit.
 
 ## Third-party PoC and licensing
 
