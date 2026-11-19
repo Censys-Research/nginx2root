@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import json
+
 import pytest
 
 import h2c_flow_control_test as compact
@@ -48,14 +50,20 @@ def test_target_guard_accepts_numeric_loopback(host: str) -> None:
     ["localhost", "127.0.0.1.example", "0.0.0.0", "192.0.2.1", "::", "example.com"],
 )
 def test_target_guard_rejects_non_loopback_and_names(host: str) -> None:
-    with patch("socket.socket") as socket_constructor, pytest.raises(SystemExit) as error:
+    with (
+        patch("socket.socket") as socket_constructor,
+        pytest.raises(SystemExit) as error,
+    ):
         compact.main(["--host", host, "--acknowledge-local-lab", ACK])
     assert error.value.code == 2
     socket_constructor.assert_not_called()
 
 
 def test_target_guard_requires_exact_acknowledgement() -> None:
-    with patch("socket.socket") as socket_constructor, pytest.raises(SystemExit) as error:
+    with (
+        patch("socket.socket") as socket_constructor,
+        pytest.raises(SystemExit) as error,
+    ):
         compact.main(["--acknowledge-local-lab", "yes"])
     assert error.value.code == 2
     socket_constructor.assert_not_called()
@@ -63,16 +71,23 @@ def test_target_guard_requires_exact_acknowledgement() -> None:
 
 @pytest.mark.parametrize("port", ["0", "65536", "-1"])
 def test_target_guard_rejects_invalid_ports(port: str) -> None:
-    with patch("socket.socket") as socket_constructor, pytest.raises(SystemExit) as error:
+    with (
+        patch("socket.socket") as socket_constructor,
+        pytest.raises(SystemExit) as error,
+    ):
         compact.main(["--port", port, "--acknowledge-local-lab", ACK])
     assert error.value.code == 2
     socket_constructor.assert_not_called()
 
 
 def test_result_requires_complete_positive_exchange() -> None:
-    positive, message = compact.summarize_result([PING_ACK], closed=False, probe_sent=True)
+    positive, message = compact.summarize_result(
+        [PING_ACK], closed=False, probe_sent=True
+    )
     assert positive
-    assert "does not demonstrate code execution" not in message  # Printed separately by main.
+    assert (
+        "does not demonstrate code execution" not in message
+    )  # Printed separately by main.
 
 
 @pytest.mark.parametrize(
@@ -118,6 +133,54 @@ def test_connection_refused_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None
     assert compact.main(["--acknowledge-local-lab", ACK]) == 2
 
 
+def test_timeout_options_are_bounded() -> None:
+    """Operators cannot remove the per-command and per-client deadlines."""
+    args = compact.parse_args(
+        [
+            "--docker",
+            "--command-timeout",
+            "120",
+            "--client-timeout",
+            "1",
+            "--acknowledge-local-lab",
+            ACK,
+        ]
+    )
+    assert args.command_timeout == 120
+    assert args.client_timeout == 1
+    for option in ("--command-timeout", "--client-timeout"):
+        with pytest.raises(SystemExit):
+            compact.parse_args([option, "121", "--acknowledge-local-lab", ACK])
+        with pytest.raises(SystemExit):
+            compact.parse_args([option, "0", "--acknowledge-local-lab", ACK])
+
+
+def test_evidence_records_reproducibility_and_scope(tmp_path: Path) -> None:
+    """Evidence is typed, serializable, and explicitly accounting-only."""
+    evidence = compact.RunEvidence(
+        script_sha256=compact.sha256_file(Path(compact.__file__)),
+        started_at="2026-11-18T00:00:00+00:00",
+        targets=(
+            compact.TargetEvidence(
+                image="nginx:1.31.8",
+                version="1.31.8",
+                expected_exit=0,
+                actual_exit=0,
+                result="passed",
+            ),
+        ),
+        cleanup_attempted=True,
+        passed=True,
+    )
+    destination = tmp_path / "evidence.json"
+    destination.write_text(json.dumps(compact.asdict(evidence)))
+    parsed = json.loads(destination.read_text())
+    assert parsed["scope"] == "accounting_only_not_rce"
+    assert parsed["tls_validated"] is False
+    assert len(parsed["script_sha256"]) == 64
+    assert parsed["targets"][0]["actual_exit"] == 0
+
+
 def test_single_file_lab_embeds_configuration_and_cleanup() -> None:
     """The public lab needs no auxiliary shell or configuration files."""
     source = Path(compact.__file__).read_text()
@@ -125,6 +188,6 @@ def test_single_file_lab_embeds_configuration_and_cleanup() -> None:
     assert '"network", "create"' in source
     assert "http2 on" in source
     assert "bs=1048576 count=8" in source
-    assert "docker\", \"rm\", \"-f" in source
-    assert "docker\", \"network\", \"rm" in source
+    assert 'docker", "rm", "-f' in source
+    assert 'docker", "network", "rm' in source
     assert "sudo docker" not in source

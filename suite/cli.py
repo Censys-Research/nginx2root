@@ -27,7 +27,9 @@ from .models import (
 )
 
 console = Console(stderr=True)
-SELECTION = click.Choice([cve.lower() for cve in CVE_IDS] + ["all"], case_sensitive=False)
+SELECTION = click.Choice(
+    [cve.lower() for cve in CVE_IDS] + ["all"], case_sensitive=False
+)
 
 
 def _selection(values: tuple[str, ...]) -> list[str]:
@@ -37,13 +39,13 @@ def _selection(values: tuple[str, ...]) -> list[str]:
     lowered = [value.lower() for value in values]
     if "all" in lowered and len(lowered) != 1:
         raise click.UsageError("'all' cannot be combined with individual CVEs")
-    selected = list(CVE_IDS) if lowered == ["all"] else [value.upper() for value in lowered]
+    selected = (
+        list(CVE_IDS) if lowered == ["all"] else [value.upper() for value in lowered]
+    )
     return list(dict.fromkeys(selected))
 
 
-def _budget(
-    attempts: int, max_bytes: int, timeout: int, parallel: bool
-) -> Budget:
+def _budget(attempts: int, max_bytes: int, timeout: int, parallel: bool) -> Budget:
     """Create a validated execution budget with one worker by default."""
     try:
         return Budget(
@@ -104,17 +106,18 @@ def _execute(
             f"execution requires --acknowledge-local-lab {LAB_ACK}; use dry-run otherwise"
         )
     budget = _budget(attempts, max_bytes, timeout, parallel)
-    results = [
-        get_result(cve, action, budget, not execute) for cve in selected
-    ] if not parallel else _parallel_results(selected, action, budget, not execute)
+    results = (
+        [get_result(cve, action, budget, not execute) for cve in selected]
+        if not parallel
+        else _parallel_results(selected, action, budget, not execute)
+    )
     report = SuiteReport(
         action=action,
         dry_run=not execute,
         results=results,
         all_verified=all(
-            result.status == Status.VERIFIED and bool(
-                result.verification and result.verification.rce_verified
-            )
+            result.status == Status.VERIFIED
+            and bool(result.verification and result.verification.rce_verified)
             for result in results
         ),
     )
@@ -138,7 +141,9 @@ def _parallel_results(
     invoke_without_command=True,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
-@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON for listing.")
+@click.option(
+    "--json", "as_json", is_flag=True, help="Emit machine-readable JSON for listing."
+)
 @click.pass_context
 def cli(ctx: click.Context, as_json: bool) -> None:
     """List or run authorized, isolated nginx2root lab PoCs.
@@ -160,9 +165,7 @@ def list_pocs(as_json: bool) -> None:
             status = (
                 Status.ARCHIVED
                 if manifest.archived
-                else Status.READY
-                if manifest.implemented
-                else Status.NOT_IMPLEMENTED
+                else Status.READY if manifest.implemented else Status.NOT_IMPLEMENTED
             )
             results.append(
                 PocResult(
@@ -188,7 +191,9 @@ def list_pocs(as_json: bool) -> None:
                     details=[str(exc)],
                 )
             )
-    report = SuiteReport(action="list", dry_run=True, results=results, all_verified=False)
+    report = SuiteReport(
+        action="list", dry_run=True, results=results, all_verified=False
+    )
     _print_report(report, as_json)
 
 
@@ -196,13 +201,17 @@ def _common_options(function: Any) -> Any:
     """Apply identical bounds and selection to every action."""
     options = [
         click.argument("cves", nargs=-1, required=True, type=SELECTION),
-        click.option("--execute", is_flag=True, help="Run commands; default is dry-run."),
+        click.option(
+            "--execute", is_flag=True, help="Run commands; default is dry-run."
+        ),
         click.option(
             "--acknowledge-local-lab",
             default=None,
             help=f"Required with --execute; exact value: {LAB_ACK}",
         ),
-        click.option("--attempts", default=1, type=click.IntRange(1, 3), show_default=True),
+        click.option(
+            "--attempts", default=1, type=click.IntRange(1, 3), show_default=True
+        ),
         click.option(
             "--max-bytes",
             default=64 * 1024 * 1024,
@@ -217,8 +226,12 @@ def _common_options(function: Any) -> Any:
             show_default=True,
             help="Wall-clock seconds per stage.",
         ),
-        click.option("--parallel", is_flag=True, help="Run selected CVEs concurrently."),
-        click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON."),
+        click.option(
+            "--parallel", is_flag=True, help="Run selected CVEs concurrently."
+        ),
+        click.option(
+            "--json", "as_json", is_flag=True, help="Emit machine-readable JSON."
+        ),
     ]
     for option in reversed(options):
         function = option(function)

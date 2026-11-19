@@ -82,9 +82,7 @@ def test_archived_size_omission_requires_explicit_declaration() -> None:
     line = "101:101 644 /tmp/rapid7-nginx-h2-proof-01"
     with pytest.raises(SuiteError):
         parse_marker_output(line, archived=True)
-    observed = parse_marker_output(
-        line, archived=True, archived_size_omitted=True
-    )
+    observed = parse_marker_output(line, archived=True, archived_size_omitted=True)
     assert observed.size == 0
 
 
@@ -98,7 +96,9 @@ def test_marker_mismatches_block_verification() -> None:
     assert any("size" in item for item in mismatches)
 
 
-@pytest.mark.parametrize("target", ["8.8.8.8", "10.128.0.106", "example.com", "::1%eth0"])
+@pytest.mark.parametrize(
+    "target", ["8.8.8.8", "10.128.0.106", "example.com", "::1%eth0"]
+)
 @pytest.mark.parametrize("option", ["--target", "--host", "--hostname", "--ip"])
 def test_non_loopback_targets_are_refused(target: str, option: str) -> None:
     """Explicit target flags cannot name external, private, or DNS targets."""
@@ -219,7 +219,13 @@ def make_manifest() -> Manifest:
             description="Read independent marker metadata",
         ),
         Phase.CONTROL: spec(
-            ["docker", "exec", "nginx-123634-patched", "stat", CONTROL.absent_marker or ""],
+            [
+                "docker",
+                "exec",
+                "nginx-123634-patched",
+                "stat",
+                CONTROL.absent_marker or "",
+            ],
             containers=("nginx-123634-patched",),
             description="Prove patched marker absent",
         ),
@@ -236,10 +242,16 @@ def make_manifest() -> Manifest:
     )
 
 
-def command(phase: Phase, code: int, stdout: str = "", stderr: str = "") -> CommandResult:
+def command(
+    phase: Phase, code: int, stdout: str = "", stderr: str = ""
+) -> CommandResult:
     """Create a mocked subprocess result for an adapter stage."""
     return CommandResult(
-        phase=phase, argv=("mock",), returncode=code, stdout_tail=stdout, stderr_tail=stderr
+        phase=phase,
+        argv=("mock",),
+        returncode=code,
+        stdout_tail=stdout,
+        stderr_tail=stderr,
     )
 
 
@@ -291,9 +303,7 @@ def test_marker_on_patched_control_blocks_verification(tmp_path: Path) -> None:
     responses = [
         command(Phase.PREMARKER, 1),
         command(Phase.RUN, 0),
-        command(
-            Phase.MARKER, 0, "101:101 0644 0bytes /tmp/nginx2root-marker-test"
-        ),
+        command(Phase.MARKER, 0, "101:101 0644 0bytes /tmp/nginx2root-marker-test"),
         command(Phase.CONTROL, 0),
     ]
     with (
@@ -418,7 +428,9 @@ def test_cli_parallel_is_explicit_and_preserves_order() -> None:
         cli, ["run", "cve-2026-123633", "cve-2026-113425", "--parallel", "--json"]
     )
     assert result.exit_code == 1
-    assert result.output.index("CVE-2026-123633") < result.output.index("CVE-2026-113425")
+    assert result.output.index("CVE-2026-123633") < result.output.index(
+        "CVE-2026-113425"
+    )
 
 
 def test_archived_control_path_cannot_be_used_for_live_runs() -> None:

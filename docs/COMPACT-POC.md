@@ -2,7 +2,7 @@
 
 **One file. No third-party Python packages. No RCE.**
 
-[`h2c_flow_control_test.py`](../h2c_flow_control_test.py) is the Censys compact test behind the 5.69 MB h2c captures. It demonstrates different behavior between vulnerable nginx 1.31.8 and patched 1.31.9 without generating the 60–119 GiB traffic schedules used by Rapid7's later crash and RCE stages.
+[`h2c_flow_control_test.py`](../h2c_flow_control_test.py) is the Censys compact accounting test represented by the retained **5.69 MB vulnerable** and **1.41 MB patched** h2c captures. It demonstrates different behavior between vulnerable nginx 1.31.8 and patched 1.31.9 without generating the 60–119 GiB traffic schedules used by Rapid7's later crash and RCE stages.
 
 See the [vulnerable-versus-patched diagram](../docs/CVE-2026-123007-ATTACK-CHAIN.md).
 
@@ -12,10 +12,16 @@ Requirements: Docker with `nginx:1.31.8` and `nginx:1.31.9` images, and Python 3
 
 ```sh
 uv run python -I h2c_flow_control_test.py \
-  --docker --acknowledge-local-lab I-AUTHORIZE-LOCAL-LAB
+  --docker \
+  --output /tmp/nginx2root-compact-evidence.json \
+  --command-timeout 45 \
+  --client-timeout 45 \
+  --acknowledge-local-lab I-AUTHORIZE-LOCAL-LAB
 ```
 
 The script creates an internal Docker network, starts each target, runs the client in a separate container sharing the target's network namespace, and removes the containers and network afterward. It uses no host networking or published ports. It accepts only numeric loopback targets and requires the exact acknowledgement above.
+
+`--command-timeout` and `--client-timeout` are each capped at 120 seconds. The target containers have memory, PID, capability, and `no-new-privileges` restrictions. The JSON evidence records the script SHA-256, image versions, expected and actual exit codes, result summaries, and whether cleanup was attempted.
 
 Expected final result:
 

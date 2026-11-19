@@ -23,7 +23,9 @@ class BoundedRunner:
         self.budget = budget
         self.cwd = cwd
 
-    def run(self, phase: Phase, spec: CommandSpec, argv: tuple[str, ...]) -> CommandResult:
+    def run(
+        self, phase: Phase, spec: CommandSpec, argv: tuple[str, ...]
+    ) -> CommandResult:
         """Execute one stage without a shell or inherited standard input."""
         timeout = min(spec.timeout, self.budget.timeout)
         byte_limit = min(spec.max_bytes, self.budget.max_bytes)
@@ -99,7 +101,12 @@ class BoundedRunner:
                 process.wait(timeout=2)
         process.stdout.close()
         process.stderr.close()
-        if spec.expect_success and process.returncode != 0 and not timed_out and not overflow:
+        if (
+            spec.expect_success
+            and process.returncode != 0
+            and not timed_out
+            and not overflow
+        ):
             truncated = truncated or total > byte_limit
         return CommandResult(
             phase=phase,

@@ -111,7 +111,9 @@ def verify_archived(manifest: Manifest, dry_run: bool = False) -> PocResult:
             result.verification.patched_control = control
             result.evidence["patched_control"] = json.dumps(control_provenance)
             if not control.checked or not control.marker_absent:
-                result.verification.reasons.append("patched control did not prove absence")
+                result.verification.reasons.append(
+                    "patched control did not prove absence"
+                )
         else:
             result.verification.reasons.append(
                 "archived baseline has no separate patched-target marker evidence"
@@ -138,7 +140,9 @@ def _plan_phases(manifest: Manifest, action: str) -> list[Phase]:
     return [Phase.MARKER, Phase.CONTROL]
 
 
-def build_or_run(manifest: Manifest, action: str, budget: Budget, dry_run: bool) -> PocResult:
+def build_or_run(
+    manifest: Manifest, action: str, budget: Budget, dry_run: bool
+) -> PocResult:
     """Build, plan, or run an implemented adapter with independent verification."""
     result = PocResult(
         cve=manifest.cve,
@@ -204,7 +208,9 @@ def _execute_checked(
     expect_absence: bool = False,
 ) -> bool:
     """Run a validated stage and report whether it failed its contract."""
-    command = runner.run(phase, manifest.commands[phase], _argv(manifest, phase, attempt))
+    command = runner.run(
+        phase, manifest.commands[phase], _argv(manifest, phase, attempt)
+    )
     result.commands.append(command)
     if not _bad_command(command, expect_absence):
         return False
@@ -277,7 +283,9 @@ def _verify_fresh(
         )
         if result.verification.rce_verified:
             result.status = Status.VERIFIED
-            result.details.append("Independent marker and patched-control evidence verified RCE.")
+            result.details.append(
+                "Independent marker and patched-control evidence verified RCE."
+            )
             return result
     result.details.append("No attempt produced complete independent RCE evidence.")
     return result

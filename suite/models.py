@@ -160,7 +160,9 @@ class CommandSpec(StrictModel):
 
     argv: tuple[str, ...]
     timeout: int = Field(default=DEFAULT_TIMEOUT, gt=0, le=MAX_TIMEOUT)
-    max_bytes: int = Field(default=DEFAULT_MAX_BYTES, ge=MIN_MAX_BYTES, le=MAX_BYTES_LIMIT)
+    max_bytes: int = Field(
+        default=DEFAULT_MAX_BYTES, ge=MIN_MAX_BYTES, le=MAX_BYTES_LIMIT
+    )
     expect_success: bool = True
     containers: tuple[str, ...] = ()
     networks: tuple[str, ...] = ()
@@ -173,7 +175,9 @@ class CommandSpec(StrictModel):
         if not value or any(not item or "\x00" in item for item in value):
             raise ValueError("argv must contain nonempty, NUL-free arguments")
         if Path(value[0]).name in {"sh", "bash", "zsh", "fish", "env"}:
-            raise ValueError("shell interpreters are not accepted; expose argv directly")
+            raise ValueError(
+                "shell interpreters are not accepted; expose argv directly"
+            )
         return value
 
 
@@ -246,7 +250,9 @@ class Budget(StrictModel):
     """Upper bounds chosen by the operator, further capped by each manifest."""
 
     attempts: int = Field(default=DEFAULT_MAX_ATTEMPTS, ge=1, le=MAX_ATTEMPTS_LIMIT)
-    max_bytes: int = Field(default=DEFAULT_MAX_BYTES, ge=MIN_MAX_BYTES, le=MAX_BYTES_LIMIT)
+    max_bytes: int = Field(
+        default=DEFAULT_MAX_BYTES, ge=MIN_MAX_BYTES, le=MAX_BYTES_LIMIT
+    )
     timeout: int = Field(default=DEFAULT_TIMEOUT, gt=0, le=MAX_TIMEOUT)
     jobs: int = Field(default=1, ge=1, le=5)
 
@@ -359,17 +365,22 @@ def parse_marker_output(
         text.strip(),
     )
     if not match:
-        raise SuiteError("marker output must be '<uid>:<gid> <0mode> [<N>bytes] <path>'")
+        raise SuiteError(
+            "marker output must be '<uid>:<gid> <0mode> [<N>bytes] <path>'"
+        )
     uid, gid, mode, size_text, path = match.groups()
     if size_text is None and not (archived and archived_size_omitted):
-        raise SuiteError("marker size is required except for declared archived evidence")
+        raise SuiteError(
+            "marker size is required except for declared archived evidence"
+        )
     if not archived and not re.fullmatch(r"0[0-7]{3}", mode):
         raise SuiteError("live marker output must use a four-digit octal mode")
     mode = mode.zfill(4)
     if not archived and not MARKER_PATTERN.fullmatch(path):
         raise SuiteError("live marker output has a non-allowlisted path")
     if archived and not (
-        MARKER_PATTERN.fullmatch(path) or (path.startswith("/tmp/") and ".." not in path)
+        MARKER_PATTERN.fullmatch(path)
+        or (path.startswith("/tmp/") and ".." not in path)
     ):
         raise SuiteError("archived marker output has an invalid path")
     return MarkerObservation(
@@ -390,7 +401,9 @@ def confined_path(relative: str) -> Path:
         resolved = (INVESTIGATION_ROOT / candidate).resolve(strict=True)
         resolved.relative_to(INVESTIGATION_ROOT.resolve())
     except (OSError, ValueError) as exc:
-        raise SuiteError(f"path escapes investigation or is missing: {relative!r}") from exc
+        raise SuiteError(
+            f"path escapes investigation or is missing: {relative!r}"
+        ) from exc
     if not resolved.is_file():
         raise SuiteError(f"not a regular file: {relative!r}")
     if resolved.stat().st_size > MAX_BYTES_LIMIT:
@@ -438,14 +451,18 @@ def validate_network_names(names: tuple[str, ...], cve: str) -> None:
             or not name.startswith(prefix)
             or name in {"bridge", "host", "none", "default"}
         ):
-            raise SuiteError(f"non-allowlisted network {name!r}; expected prefix {prefix}")
+            raise SuiteError(
+                f"non-allowlisted network {name!r}; expected prefix {prefix}"
+            )
 
 
 def validate_container_name(name: str, cve: str) -> None:
     """Require the dedicated nginx-<numeric CVE>- prefix on every container."""
     prefix = f"nginx-{cve.removeprefix('CVE-2026-')}-"
     if not NAME_PATTERN.fullmatch(name) or not name.startswith(prefix):
-        raise SuiteError(f"non-allowlisted container {name!r}; expected prefix {prefix}")
+        raise SuiteError(
+            f"non-allowlisted container {name!r}; expected prefix {prefix}"
+        )
 
 
 def _replace_placeholders(item: str, context: dict[str, str]) -> str:
@@ -514,7 +531,14 @@ def prepare_command(
         }:
             operand_index = 2
             while operand_index < len(argv) and argv[operand_index].startswith("-"):
-                if argv[operand_index] in {"-t", "--time", "-w", "--workdir", "-e", "--env"}:
+                if argv[operand_index] in {
+                    "-t",
+                    "--time",
+                    "-w",
+                    "--workdir",
+                    "-e",
+                    "--env",
+                }:
                     operand_index += 1
                 operand_index += 1
             if operand_index < len(argv):
@@ -549,8 +573,10 @@ def prepare_command(
                 ):
                     raise SuiteError(f"non-loopback target {target!r} refused")
         for marker_arg in re.findall(r"/tmp/nginx2root-marker-[a-z0-9-]+", arg):
-            if marker and marker_arg != marker.path and (
-                not control or marker_arg != control.absent_marker
+            if (
+                marker
+                and marker_arg != marker.path
+                and (not control or marker_arg != control.absent_marker)
             ):
                 raise SuiteError(f"unapproved marker path {marker_arg!r}")
     if target_count > 1:
@@ -558,7 +584,9 @@ def prepare_command(
     for container in spec.containers:
         validate_container_name(container, cve)
         if executable == "docker" and container not in argv:
-            raise SuiteError(f"declared container {container!r} absent from Docker argv")
+            raise SuiteError(
+                f"declared container {container!r} absent from Docker argv"
+            )
     validate_network_names(tuple(networks), cve)
     return argv
 
