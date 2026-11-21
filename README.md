@@ -1,8 +1,10 @@
 # nginx2root lab reproductions
 
-Censys Research's isolated-lab reproductions of the five nginx2root vulnerabilities. This repository contains a compact HTTP/2 accounting proof of concept, packet captures, independent command-execution evidence, and a guarded compatibility runner.
+Censys Research's isolated-lab reproductions of the five nginx2root vulnerabilities. This repository contains a compact HTTP/2 accounting proof of concept, packet captures, and a guarded compatibility runner.
 
 **Start here:** the [single-file compact PoC](h2c_flow_control_test.py) demonstrates the `CVE-2026-123007` accounting error on every release from nginx 1.30.0 through 1.31.8, with the patched 1.31.9 control over cleartext h2c. It is not an RCE exploit.
+
+> **A false negative is the worst outcome here.** Do not run the accounting probe over TLS and read "nothing" as patched. Over TLS the differential does not discriminate, so a null TLS result is **unknown**, never patched. See the [TLS and h2c calibration](calibration/TLS-H2C-DIFFERENTIAL.md) before you trust any negative.
 
 ## Quick start
 
@@ -31,6 +33,8 @@ Read [compact PoC instructions](docs/COMPACT-POC.md) and the [safety boundary](S
 
 The client consumes the initial connection window, queues an 8 MB response, resets the stream, and probes the accounting error with a one-byte update. Vulnerable nginx accepts it and answers PING. Patched nginx rejects the earlier 4 MiB update and closes the connection. The differential is verified on every release from 1.30.0 through 1.31.8, with 1.31.9 as the patched control.
 
+This is a **lab-calibrated differential for internal cleartext-h2c origins**, not an internet TLS scanner. It is lab-discriminating only under its stated preconditions, over h2c: enough queued bytes, a single worker in the lab matrix, and a direct path to the origin. The one realistic topology is a TLS-terminating load balancer or ingress in front of a plaintext h2c origin, where the probe reaches that origin directly over cleartext. Over TLS the same probe does not discriminate patched from vulnerable (see the [TLS and h2c calibration](calibration/TLS-H2C-DIFFERENTIAL.md)), so a null result over TLS is **unknown**, never **patched**.
+
 It does **not** corrupt memory, reclaim objects, install callbacks, execute commands, or create a shell. TLS support for the compact test is not validated.
 
 The retained evidence includes a **5.69 MB vulnerable capture** and a **1.41 MB patched capture**. They contain private lab addresses and stock nginx content, with no personal information or credentials.
@@ -43,9 +47,9 @@ The retained evidence includes a **5.69 MB vulnerable capture** and a **1.41 MB 
 | --- | --- | --- | --- | --- |
 | 1.30.0–1.30.6 | Verified | Verified on 1.30.0 and 1.30.6 | h2c, one worker | Accounting error confirmed |
 | 1.31.0–1.31.5 | Verified | Verified on 1.31.0 and 1.31.5 | h2c, one worker | Accounting error confirmed |
-| 1.31.6 | Verified | Verified | h2c, one worker | Accounting error confirmed; full RCE separately verified |
+| 1.31.6 | Verified | Verified | h2c, one worker | Accounting error confirmed |
 | 1.31.7 | Verified | Verified | h2c, one worker | Accounting error confirmed; full RCE unverified |
-| 1.31.8 | Verified | Verified | h2c, one worker | Accounting error confirmed; full RCE separately verified |
+| 1.31.8 | Verified | Verified | h2c, one worker | Accounting error confirmed; full RCE reproduced once (2026-11-21) |
 | 1.31.9 | Rejects probe | Rejects probe | Patched control | No accounting proof |
 
 Additional native x86-64 coverage: one, two, and four workers; fresh, 40-request, and 200-request heap states; static full and Range responses; buffered upstream full, Range, chunked, and close-delimited responses. Unbuffered proxying is inconclusive because it leaves insufficient queued data.
@@ -56,7 +60,7 @@ See [worker/heap evidence](evidence/release-validation/worker-heap-matrix.md), [
 
 | CVE | Tested path | Current result |
 | --- | --- | --- |
-| `CVE-2026-123007` | HTTP/2 flow control | Rapid7's full RCE chain independently reproduced on matched native x86-64 AVX512 profiles for nginx 1.31.6 and 1.31.8. |
+| `CVE-2026-123007` | HTTP/2 flow control | Rapid7's full RCE chain reproduced once, on 2026-11-21, against an owned nginx 1.31.8 target (native x86-64 AVX-512). Not run on 1.31.6. |
 | `CVE-2026-123633` | HTTP/2 with upstream proxying | UAF and stock worker crash reproduced; no unified RCE adapter. |
 | `CVE-2026-123634` | Runtime DNS resolution with subrequests | ASAN UAF and custom-debug crashes; no stock-image crash or unified RCE adapter. |
 | `CVE-2026-121810` | HTTP/3 with upstream proxying | Not reproduced. |
@@ -66,20 +70,21 @@ A worker crash, sanitizer report, allocation reuse, or client dispatch message i
 
 ## Full RCE evidence
 
-Censys reproduced Rapid7's complete `CVE-2026-123007` exploit chain against an isolated nginx 1.31.8 target on native x86-64 AVX512 hardware. The run dispatched 119.02 GiB of plaintext over 16 auxiliary connections in 166.04 seconds, captured a 14,393-byte memory disclosure, resolved ASLR, reclaimed the overwritten pool, and dispatched a cleanup callback invoking `system(command)`.
+On 2026-11-21, Censys reproduced Rapid7's complete `CVE-2026-123007` exploit chain exactly once, against a disposable, isolated nginx 1.31.8 container we own, driven from a `python:3.10` container with the native streamer recompiled from source, on an AVX-512 host (Ryzen 9 7950X). The profile `golden-nginx-1.31.8-debian13-amd64` was auto-selected. This single run dispatched ~119.02 GiB of plaintext over 16 auxiliary connections in ~190 seconds, captured a 14,393-byte memory disclosure, and resolved ASLR (H=0x594f9ac415c0, nginx=0x594f819ad840, libc=0x72978269a000), recovering the in-band libc `system` at 0x7297826ed090. It then reclaimed the overwritten pool and dispatched a cleanup callback invoking `system(command)`.
 
-The harmless command was:
+The harmless command, passed via `--cmd`, was:
 
 ```sh
-touch /tmp/rapid7-nginx-h2-proof-01
+touch /tmp/pwn-realrun-01
 ```
 
-An independent check found the marker owned by UID/GID 101:101, proving command execution as the nginx worker. A worker then aborted on signal 6 after a double free. This was not host root, a kernel exploit, container escape, or a stable shell.
+An independent check found the marker `/tmp/pwn-realrun-01` owned by UID/GID 101:101 with mode 644, proving command execution as the nginx worker. The worker then crashed with `free(): double free detected in tcache 2`, and worker process 22 exited on signal 6 at 2026/11/21 15:29:37. This single-shot, worker-crashing primitive was not host root, a kernel exploit, container escape, or a stable shell.
+
+This was the only run. The chain was not run against the patched 1.31.9 build: the profile gate would reject a non-matching build, but no patched-control exploit run was performed.
 
 See:
 
-- [RCE evidence](evidence/cve-2026-123007/RCE-CONFIRMED.md)
-- [Fresh release validation](evidence/release-validation/VALIDATION.md)
+- [RCE evidence](evidence/cve-2026-123007/RCE-CONFIRMED.md) and [the marker record](evidence/cve-2026-123007/rapid7-rce-marker.txt), both documenting this single genuine run of 2026-11-21
 - [Attack-chain diagram](docs/CVE-2026-123007-ATTACK-CHAIN.md)
 - [Reproduction instructions](docs/REPRODUCTION.md)
 
@@ -110,6 +115,15 @@ uv run pytest
 ```
 
 CI also runs Python compilation, formatting checks, unit tests, and the real compact Docker differential.
+
+## Defensive deliverables
+
+For defenders who need to establish patch status and detect exploitation, this repository ships artifacts built on three-valued logic: **vulnerable**, **not-affected**, or **unknown**. None of them turns a remote banner into a verdict. The affected range is nginx 1.9.5 through 1.30.6 and 1.31.0 through 1.31.8, fixed upstream in 1.30.7 (stable) and 1.31.9 (mainline), and HTTP/2 must be enabled.
+
+- [Patch-state matrix](PATCH-STATE-MATRIX.md): per-distro and per-product status with a confidence column. Remote detection is **banner-aware**: a banner whose version falls in the affected range is a **CANDIDATE**, never a verdict, and everything we did not lab-verify is an **unknown** row. The banner lies. Ubuntu backports the fix while keeping the identical `nginx/1.18.0 (Ubuntu)` banner (lab-verified: pre-patch `1.18.0-6ubuntu14` is vulnerable, post-USN `1.18.0-6ubuntu14.24` is patched, same banner and same HTTP/2 SETTINGS). The only reliable check is on-host: `dpkg -l nginx-core` (Debian and Ubuntu), `rpm -q nginx` (RHEL family), `apk info nginx` (Alpine), and `nginx -V` for the build configuration. Debian, RHEL, AlmaLinux, Rocky, Alpine, Amazon Linux 2023, Chainguard, OpenResty, ingress-nginx, Kong, Tengine, and NGINX Plus are **unknown** rows with the on-host method stated; we did not invent advisory IDs or fixed versions for them.
+- [Crash detection](detection/CRASH-DETECTION.md): host-side and log-side signals for the availability event that firing the Rapid7 chain actually produces, a worker double-free (`free(): double free detected in tcache 2`) and exit on signal 6. This is a single-shot denial-of-service primitive in the general case; RCE is profile-gated and AVX-512 gated.
+- [OpenVEX statement](VEX/CVE-2026-123007.openvex.json): a machine-readable VEX document for CVE-2026-123007 that asserts only the lab-verified status and marks everything else as under investigation.
+- [TLS and h2c calibration](calibration/TLS-H2C-DIFFERENTIAL.md): the calibration data behind the false-negative warning. The accounting differential discriminates 1.31.8 (vulnerable, accepts the post-RST over-credit and answers PING) from 1.31.9 (patched, closes after the 4 MiB refund) over **cleartext h2c**, and does **not** discriminate over TLS.
 
 ## License
 
